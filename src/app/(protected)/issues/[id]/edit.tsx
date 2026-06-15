@@ -39,23 +39,37 @@ export default function EditTaskScreen() {
     enabled: !!id,
   });
 
-  if (user && !user.canManageTasks) {
+  // Assignees without can_manage_tasks may edit their own task, but only the
+  // status / dates / time-tracking fields (restricted form). Full edit stays
+  // gated on can_manage_tasks. The assignee check waits for `editable` to load.
+  const restricted = !!user && !user.canManageTasks;
+  if (restricted && editable && editable.assigneeId !== user!.id) {
     return <Redirect href={`/issues/${id}`} />;
   }
 
   const onSubmit = (values: TaskInputType) => {
-    const input: Partial<AdminTaskInput> = {
-      title: values.title,
-      statusId: values.statusKey,
-      description: values.description ?? "",
-      priority: values.priority,
-      type: values.type,
-      assigneeId: values.assigneeId || null,
-      startDate: values.startDate || null,
-      dueDate: values.dueDate || null,
-      estimate: values.estimate || null,
-      spent: values.spent || null,
-    };
+    // Restricted editors only send the fields they're allowed to change; the
+    // RPC leaves everything else untouched.
+    const input: Partial<AdminTaskInput> = restricted
+      ? {
+          statusId: values.statusKey,
+          startDate: values.startDate || null,
+          dueDate: values.dueDate || null,
+          estimate: values.estimate || null,
+          spent: values.spent || null,
+        }
+      : {
+          title: values.title,
+          statusId: values.statusKey,
+          description: values.description ?? "",
+          priority: values.priority,
+          type: values.type,
+          assigneeId: values.assigneeId || null,
+          startDate: values.startDate || null,
+          dueDate: values.dueDate || null,
+          estimate: values.estimate || null,
+          spent: values.spent || null,
+        };
     updateMutation.mutate(input, {
       onSuccess: () => {
         Alert.alert("Success", "Task updated.");
@@ -78,7 +92,7 @@ export default function EditTaskScreen() {
           <Ionicons name="close" size={26} color="#4f46e5" />
         </TouchableOpacity>
         <Text className="text-lg font-semibold text-gray-900 dark:text-gray-100 ml-2">
-          Edit Task
+          {restricted ? "Update Task" : "Edit Task"}
         </Text>
       </View>
 
@@ -120,6 +134,7 @@ export default function EditTaskScreen() {
               submitLabel="Save Changes"
               isSubmitting={updateMutation.isPending}
               projectLocked
+              restricted={restricted}
             />
           </ScrollView>
         </KeyboardAvoidingView>

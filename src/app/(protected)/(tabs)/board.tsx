@@ -27,7 +27,11 @@ import { SafeAreaView } from "react-native-safe-area-context";
 export default function BoardScreen() {
   const router = useRouter();
   const { user } = useSession();
-  const canMove = !!user?.canManageTasks;
+  // Task managers can move any card; everyone else can move cards assigned to
+  // them (assignee self-service — RLS allows the underlying status update).
+  const canManage = !!user?.canManageTasks;
+  const canMoveIssue = (issue: BoardIssue) =>
+    canManage || issue.assignees.some((a) => a.id === user?.id);
 
   const { data: projects = [] } = useProjects();
   const [projectId, setProjectId] = useState<string>(ALL_PROJECTS);
@@ -151,7 +155,7 @@ export default function BoardScreen() {
                     <BoardCard
                       key={issue.id}
                       issue={issue}
-                      canMove={canMove}
+                      canMove={canMoveIssue(issue)}
                       onPress={() => router.push(`/issues/${issue.id}`)}
                       onMove={() => setMoveTarget(issue)}
                     />

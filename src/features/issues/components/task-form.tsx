@@ -49,6 +49,12 @@ export interface TaskFormProps {
   // The update_issue RPC cannot move an issue between projects, so the edit
   // form locks the project to keep its workflow/status options consistent.
   projectLocked?: boolean;
+  // Assignee self-service: a user without can_manage_tasks may still update
+  // their own task's status, dates and time tracking. In restricted mode the
+  // form hides everything else (title/description/project/assignee/priority/
+  // type) so they can't reassign or re-scope the task. RLS still allows the
+  // underlying row update (issues_update permits assignees).
+  restricted?: boolean;
 }
 
 export function TaskForm({
@@ -57,6 +63,7 @@ export function TaskForm({
   submitLabel,
   isSubmitting,
   projectLocked = false,
+  restricted = false,
 }: TaskFormProps) {
   const { data: projects = [] } = useProjects();
   const { data: users = [] } = useUsers();
@@ -120,35 +127,40 @@ export function TaskForm({
 
   return (
     <View>
-      <FormField
-        name="title"
-        control={control}
-        label="Title"
-        placeholder="What needs to be done?"
-        error={errors.title?.message}
-        required
-      />
-      <FormField
-        name="description"
-        control={control}
-        label="Description"
-        placeholder="Add more detail (optional)"
-        multiline
-        numberOfLines={4}
-        style={{ minHeight: 96, textAlignVertical: "top" }}
-        error={errors.description?.message}
-      />
+      {!restricted && (
+        <>
+          <FormField
+            name="title"
+            control={control}
+            label="Title"
+            placeholder="What needs to be done?"
+            error={errors.title?.message}
+            required
+          />
+          <FormField
+            name="description"
+            control={control}
+            label="Description"
+            placeholder="Add more detail (optional)"
+            multiline
+            numberOfLines={4}
+            style={{ minHeight: 96, textAlignVertical: "top" }}
+            error={errors.description?.message}
+          />
 
-      <FormPicker
-        name="projectId"
-        control={control}
-        label="Project"
-        placeholder="Default project"
-        items={projectItems}
-        enabled={!projectLocked}
-        error={errors.projectId?.message}
-        required={false}
-      />
+          <FormPicker
+            name="projectId"
+            control={control}
+            label="Project"
+            placeholder="Default project"
+            items={projectItems}
+            enabled={!projectLocked}
+            error={errors.projectId?.message}
+            required={false}
+          />
+        </>
+      )}
+
       <FormPicker
         name="statusKey"
         control={control}
@@ -159,52 +171,57 @@ export function TaskForm({
         error={errors.statusKey?.message}
         required
       />
-      <FormPicker
-        name="assigneeId"
-        control={control}
-        label="Assignee"
-        placeholder="Search by name or designation"
-        items={userItems}
-        error={errors.assigneeId?.message}
-        required={false}
-      />
 
-      {selectedAssignee && (
-        <View className="-mt-2 mb-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-100 dark:border-gray-700 px-3 py-2">
-          <Text className="text-[11px] text-gray-400 mb-1">
-            Assignee details (read-only)
-          </Text>
-          <ReadOnlyRow label="Company" value={selectedAssignee.companyName} />
-          <ReadOnlyRow label="Department" value={selectedAssignee.departmentName} />
-          <ReadOnlyRow label="Designation" value={selectedAssignee.designationName} />
-          {!!selectedAssignee.groupName && (
-            <ReadOnlyRow label="Group" value={selectedAssignee.groupName} />
+      {!restricted && (
+        <>
+          <FormPicker
+            name="assigneeId"
+            control={control}
+            label="Assignee"
+            placeholder="Search by name or designation"
+            items={userItems}
+            error={errors.assigneeId?.message}
+            required={false}
+          />
+
+          {selectedAssignee && (
+            <View className="-mt-2 mb-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-100 dark:border-gray-700 px-3 py-2">
+              <Text className="text-[11px] text-gray-400 mb-1">
+                Assignee details (read-only)
+              </Text>
+              <ReadOnlyRow label="Company" value={selectedAssignee.companyName} />
+              <ReadOnlyRow label="Department" value={selectedAssignee.departmentName} />
+              <ReadOnlyRow label="Designation" value={selectedAssignee.designationName} />
+              {!!selectedAssignee.groupName && (
+                <ReadOnlyRow label="Group" value={selectedAssignee.groupName} />
+              )}
+            </View>
           )}
-        </View>
-      )}
 
-      <View className="flex-row gap-3">
-        <View className="flex-1">
-          <FormPicker
-            name="priority"
-            control={control}
-            label="Priority"
-            items={PRIORITY_ITEMS}
-            error={errors.priority?.message}
-            required
-          />
-        </View>
-        <View className="flex-1">
-          <FormPicker
-            name="type"
-            control={control}
-            label="Type"
-            items={TYPE_ITEMS}
-            error={errors.type?.message}
-            required
-          />
-        </View>
-      </View>
+          <View className="flex-row gap-3">
+            <View className="flex-1">
+              <FormPicker
+                name="priority"
+                control={control}
+                label="Priority"
+                items={PRIORITY_ITEMS}
+                error={errors.priority?.message}
+                required
+              />
+            </View>
+            <View className="flex-1">
+              <FormPicker
+                name="type"
+                control={control}
+                label="Type"
+                items={TYPE_ITEMS}
+                error={errors.type?.message}
+                required
+              />
+            </View>
+          </View>
+        </>
+      )}
 
       <View className="flex-row gap-3">
         <View className="flex-1">

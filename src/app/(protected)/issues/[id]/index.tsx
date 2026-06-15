@@ -1,15 +1,20 @@
 import { useSession } from "@/context/auth-context";
+import { MoveStatusSheet, type MoveOption } from "@/features/board";
 import {
+  fetchProjectStatuses,
   priorityPill,
   statusPill,
   typeVisual,
   useDeleteIssue,
   useIssue,
+  useUpdateIssue,
 } from "@/features/issues";
 import { formatDuration } from "@/lib/duration";
 import { Ionicons } from "@expo/vector-icons";
+import { useQuery } from "@tanstack/react-query";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -37,9 +42,47 @@ export default function IssueDetailScreen() {
   const { user } = useSession();
   const { data: issue, isLoading, isError, error } = useIssue(id);
   const deleteMutation = useDeleteIssue();
+  const updateMutation = useUpdateIssue(id);
+  const [statusSheet, setStatusSheet] = useState(false);
 
-  const canEdit = !!user?.canManageTasks;
+  // Assignees (not just task managers) may change status / edit their own task's
+  // dates & time tracking. RLS allows the underlying update; the edit form runs
+  // in restricted mode for them.
+  const isAssignee = !!user && issue?.fields.assignee?.accountId === user.id;
+  const canEdit = !!user?.canManageTasks || isAssignee;
   const canDelete = !!user?.canDeleteTasks;
+
+  // Status options for this issue's project (drives the inline status changer).
+  const projectId = issue?.fields.project?.id as string | undefined;
+  const { data: statuses = [] } = useQuery({
+    queryKey: ["project-statuses", projectId],
+    queryFn: () => fetchProjectStatuses(projectId as string),
+    enabled: !!projectId && canEdit,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const statusOptions: MoveOption[] = useMemo(
+    () => statuses.map((s) => ({ value: s.key, label: s.label })),
+    [statuses]
+  );
+  // The JiraIssue shape carries the status label, not its key — match back to
+  // the key so the current option is highlighted in the sheet.
+  const currentStatusKey =
+    statuses.find((s) => s.label === issue?.fields.status.name)?.key ?? "";
+
+  const changeStatus = (statusKey: string) => {
+    updateMutation.mutate(
+      { statusId: statusKey },
+      {
+        onSuccess: () => setStatusSheet(false),
+        onError: (e) =>
+          Alert.alert(
+            "Could not update status",
+            e instanceof Error ? e.message : "Unknown error"
+          ),
+      }
+    );
+  };
 
   const confirmDelete = () => {
     if (!issue) return;
@@ -144,11 +187,35 @@ export default function IssueDetailScreen() {
                   {f.issuetype.name}
                 </Text>
                 <View className="flex-1" />
-                <View className={`px-2.5 py-1 rounded-full ${status.bg}`}>
-                  <Text className={`text-xs font-medium ${status.text}`}>
-                    {f.status.name}
-                  </Text>
-                </View>
+                {canEdit ? (
+                  <TouchableOpacity
+                    onPress={() => setStatusSheet(true)}
+                    disabled={updateMutation.isPending}
+                    className={`flex-row items-center px-2.5 py-1 rounded-full ${status.bg}`}
+                  >
+                    {updateMutation.isPending ? (
+                      <ActivityIndicator size="small" color="#6b7280" />
+                    ) : (
+                      <>
+                        <Text className={`text-xs font-medium ${status.text}`}>
+                          {f.status.name}
+                        </Text>
+                        <Ionicons
+                          name="chevron-down"
+                          size={13}
+                          color="#6b7280"
+                          style={{ marginLeft: 3 }}
+                        />
+                      </>
+                    )}
+                  </TouchableOpacity>
+                ) : (
+                  <View className={`px-2.5 py-1 rounded-full ${status.bg}`}>
+                    <Text className={`text-xs font-medium ${status.text}`}>
+                      {f.status.name}
+                    </Text>
+                  </View>
+                )}
               </View>
 
               <Text className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-4">
@@ -218,6 +285,16 @@ export default function IssueDetailScreen() {
           );
         })()
       )}
+
+      <MoveStatusSheet
+        visible={statusSheet}
+        title={issue ? `Move ${issue.key}` : "Move"}
+        options={statusOptions}
+        currentValue={currentStatusKey}
+        onSelect={changeStatus}
+        onClose={() => setStatusSheet(false)}
+        isMoving={updateMutation.isPending}
+      />
     </SafeAreaView>
   );
 }
