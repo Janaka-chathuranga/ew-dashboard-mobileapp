@@ -13,7 +13,7 @@ import {
   useDesignations,
   useGroups,
   useUserHeadDepartments,
-  useUserRoleChoices,
+  useUserRoleOptions,
 } from "@/features/org";
 import { Ionicons } from "@expo/vector-icons";
 import { useQueryClient } from "@tanstack/react-query";
@@ -37,13 +37,15 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-// Fallback used only until the user_roles master loads.
-const FALLBACK_ROLE_ITEMS = [
-  { label: "Member", value: "member" },
-  { label: "Team Lead", value: "team-lead" },
-  { label: "Department Head", value: "department-lead" },
-  { label: "Head", value: "head" },
-  { label: "Admin", value: "admin" },
+// Fallback used only until the roles master loads. Keyed by the user_role enum
+// (value === roleValue) — the Edge Function's resolveRole accepts a bare enum
+// for back-compat, so the form still works if the master is unreachable.
+const FALLBACK_ROLE_OPTIONS = [
+  { label: "Member", value: "member", roleValue: "member" },
+  { label: "Team Lead", value: "team-lead", roleValue: "team-lead" },
+  { label: "Department Head", value: "department-lead", roleValue: "department-lead" },
+  { label: "Head", value: "head", roleValue: "head" },
+  { label: "Admin", value: "admin", roleValue: "admin" },
 ];
 
 const FLAGS = [
@@ -114,7 +116,7 @@ export default function EditUserScreen() {
     if (!target) return;
     setDisplayName(target.displayName);
     setEmail(target.emailAddress);
-    setRoleId(target.roleId);
+    // roleId is seeded from the master role in a dedicated effect below.
     setCompanyId(target.companyId ?? "");
     setDepartmentId(target.departmentId ?? "");
     setGroupId(target.groupId ?? "");
@@ -144,7 +146,31 @@ export default function EditUserScreen() {
   const { data: groups = [] } = useGroups(departmentId || undefined);
   const { data: designations = [] } = useDesignations();
   const { data: allDepartments = [] } = useDepartments();
-  const { data: userRoles = [] } = useUserRoleChoices();
+  const { data: userRoleOpts = [] } = useUserRoleOptions();
+
+  // Role options come from the roles master (scope user|both), keyed by master
+  // role id; `roleValue` is the permission level used for gating. Fallback enum
+  // list until the master loads.
+  const baseRoleOptions = userRoleOpts.length
+    ? userRoleOpts.map((r) => ({ value: r.id, label: r.name, roleValue: r.roleValue }))
+    : FALLBACK_ROLE_OPTIONS;
+  const defaultRoleId =
+    baseRoleOptions.find((r) => r.roleValue === "member")?.value ??
+    baseRoleOptions[0]?.value ??
+    "";
+
+  // Seed/repair the role selection once the options resolve. Prefers the stored
+  // master role (role_id); falls back to a role at the same permission level,
+  // then to Member. Runs whenever the current selection isn't a valid option.
+  useEffect(() => {
+    if (!target) return;
+    if (baseRoleOptions.some((r) => r.value === roleId)) return;
+    const seeded =
+      target.roleRecordId ??
+      baseRoleOptions.find((r) => r.roleValue === target.roleId)?.value ??
+      defaultRoleId;
+    if (seeded && seeded !== roleId) setRoleId(seeded);
+  }, [target, baseRoleOptions, roleId, defaultRoleId]);
 
   if (user && !allowed) {
     return <Redirect href="/(protected)/(tabs)/profile" />;
@@ -158,10 +184,14 @@ export default function EditUserScreen() {
     );
   }
 
-  const allRoleItems = userRoles.length ? userRoles : FALLBACK_ROLE_ITEMS;
-  const roleItems = isAdmin
-    ? allRoleItems
-    : allRoleItems.filter((r) => r.value !== "admin" && r.value !== "head");
+  // Never let a non-admin assign admin/head.
+  const roleOptions = isAdmin
+    ? baseRoleOptions
+    : baseRoleOptions.filter((r) => r.roleValue !== "admin" && r.roleValue !== "head");
+  const roleItems = roleOptions.map((r) => ({ label: r.label, value: r.value }));
+  // Permission level of the selected role (drives the head-only departments UI).
+  const selectedRoleValue =
+    baseRoleOptions.find((r) => r.value === roleId)?.roleValue ?? null;
 
   const onSave = () => {
     if (!displayName.trim()) {
@@ -189,7 +219,7 @@ export default function EditUserScreen() {
               // Keep head assignments in sync; clear them if no longer a head.
               await setUserHeadDepartments(
                 target.accountId,
-                roleId === "head" ? headDeptIds : []
+                selectedRoleValue === "head" ? headDeptIds : []
               );
               queryClient.invalidateQueries({
                 queryKey: ["head-departments", target.accountId],
@@ -344,7 +374,7 @@ export default function EditUserScreen() {
           />
         </View>
 
-        {isAdmin && roleId === "head" && (
+        {isAdmin && selectedRoleValue === "head" && (
           <View className="mb-4">
             <Label text="Head of Departments" />
             <View className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">

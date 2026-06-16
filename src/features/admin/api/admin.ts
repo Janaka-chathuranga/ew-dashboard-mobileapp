@@ -7,7 +7,10 @@ export interface AdminUser {
   displayName: string;
   emailAddress: string;
   active: boolean;
+  /** Permission level (user_role enum) stored on profiles.role. */
   roleId: string;
+  /** The chosen master role (project_roles.id) stored on profiles.role_id. */
+  roleRecordId: string | null;
   companyId: string | null;
   departmentId: string | null;
   groupId: string | null;
@@ -29,9 +32,10 @@ export interface AdminUser {
 export async function fetchAdminUsers(): Promise<AdminUser[]> {
   const { data, error } = await supabase
     .from("profiles")
-    .select(
-      "id, display_name, email, active, role, company_id, department_id, group_id, designation_id, can_manage_tasks, can_delete_tasks, can_filter_dashboard, can_access_console, can_create_users, can_create_companies, can_create_departments, can_create_groups, can_create_designations, can_create_roles, can_create_projects"
-    )
+    // `*` (not an explicit list) so this keeps working before the role_id
+    // migration (20260611000028) is applied to the shared DB — the column is
+    // simply absent (→ roleRecordId null) until then. Mirrors the web app.
+    .select("*")
     .order("display_name", { ascending: true });
   if (error) throw new Error(error.message);
   return (data ?? []).map((p: any) => ({
@@ -40,6 +44,7 @@ export async function fetchAdminUsers(): Promise<AdminUser[]> {
     emailAddress: p.email,
     active: p.active,
     roleId: p.role,
+    roleRecordId: p.role_id ?? null,
     companyId: p.company_id,
     departmentId: p.department_id,
     groupId: p.group_id,

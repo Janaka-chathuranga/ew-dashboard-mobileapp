@@ -1,5 +1,6 @@
 import { useSession } from "@/context/auth-context";
 import { useAdminUsers, type AdminUser } from "@/features/admin";
+import { useUserRoleOptions } from "@/features/org";
 import { Ionicons } from "@expo/vector-icons";
 import { Redirect, Stack, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -27,6 +28,11 @@ export default function AdminUsersScreen() {
 
   const { data: users, isLoading, isError, error, refetch, isRefetching } =
     useAdminUsers();
+  // Map a user's stored master role (role_id) to its display name; fall back to
+  // the enum permission level when no master role is linked.
+  const { data: roleOpts = [] } = useUserRoleOptions();
+  const displayRole = (u: AdminUser) =>
+    roleOpts.find((r) => r.id === u.roleRecordId)?.name ?? roleLabel(u.roleId);
 
   if (user && !allowed) {
     return <Redirect href="/(protected)/(tabs)/profile" />;
@@ -98,7 +104,7 @@ export default function AdminUsersScreen() {
               </View>
               <View className="items-end">
                 <Text className="text-xs text-gray-600 dark:text-gray-300">
-                  {roleLabel(item.roleId)}
+                  {displayRole(item)}
                 </Text>
                 <View
                   className={`px-2 py-0.5 rounded-full mt-1 ${

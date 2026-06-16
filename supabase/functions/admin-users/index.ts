@@ -15,6 +15,15 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const HEAD_ASSIGNABLE_ROLES = ["member", "team-lead", "department-lead"];
 
+// The fixed user_role enum values stored on profiles.role.
+const USER_ROLE_ENUMS = new Set([
+  "admin",
+  "team-lead",
+  "member",
+  "department-lead",
+  "head",
+]);
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
@@ -63,6 +72,28 @@ Deno.serve(async (req: Request) => {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
+  // Resolve a form roleId into the enum permission level (profiles.role) and the
+  // master role id (profiles.role_id). `roleId` is normally a project_roles UUID;
+  // a bare enum string is accepted for back-compat. A custom role with no
+  // role_value falls back to the lowest level ('member'). Mirrors the web
+  // app/admin/actions.ts resolveRole.
+  async function resolveRole(
+    roleId: string
+  ): Promise<{ enumValue: string; recordId: string | null }> {
+    if (USER_ROLE_ENUMS.has(roleId)) {
+      return { enumValue: roleId, recordId: null };
+    }
+    const { data } = await admin
+      .from("project_roles")
+      .select("id, role_value")
+      .eq("id", roleId)
+      .maybeSingle();
+    return {
+      enumValue: (data?.role_value as string) ?? "member",
+      recordId: data?.id ?? null,
+    };
+  }
+
   // ---- getOperator: authoritative role from the DB, not the client ----
   const { data: profile } = await admin
     .from("profiles")
@@ -95,12 +126,17 @@ Deno.serve(async (req: Request) => {
 
   function enforceHeadScope<T extends Record<string, any>>(
     payload: T,
-    targetDepartmentId: string | null | undefined
+    targetDepartmentId: string | null | undefined,
+    resolvedRoleValue?: string
   ): T {
     if (!op.canCreateUsers) throw new Error("FORBIDDEN");
     // Heads may NOT assign admin/head roles (no privilege escalation), but they
-    // CAN set permission flags for users in their own departments.
-    if (payload.roleId && !HEAD_ASSIGNABLE_ROLES.includes(payload.roleId)) {
+    // CAN set permission flags for users in their own departments. The check is
+    // against the RESOLVED enum level, not the raw roleId (which is now a UUID).
+    if (
+      resolvedRoleValue &&
+      !HEAD_ASSIGNABLE_ROLES.includes(resolvedRoleValue)
+    ) {
       throw new Error("You can only assign member or lead roles.");
     }
     const dept = targetDepartmentId ?? null;
@@ -128,7 +164,10 @@ Deno.serve(async (req: Request) => {
 
     if (action === "create") {
       let payload = body.payload ?? {};
-      if (!op.isAdmin) payload = enforceHeadScope(payload, payload.departmentId);
+      // Resolve the chosen master role → permission level (enum) + role record id.
+      const { enumValue, recordId } = await resolveRole(payload.roleId);
+      if (!op.isAdmin)
+        payload = enforceHeadScope(payload, payload.departmentId, enumValue);
 
       const { data, error } = await admin.auth.admin.createUser({
         email: payload.emailAddress,
@@ -136,7 +175,8 @@ Deno.serve(async (req: Request) => {
         email_confirm: true,
         user_metadata: {
           display_name: payload.displayName,
-          role: payload.roleId,
+          // handle_new_user casts this into the enum column — must be an enum.
+          role: enumValue,
         },
       });
       if (error) throw new Error(error.message);
@@ -146,7 +186,8 @@ Deno.serve(async (req: Request) => {
         .from("profiles")
         .update({
           display_name: payload.displayName,
-          role: payload.roleId,
+          role: enumValue,
+          role_id: recordId,
           company_id: payload.companyId || null,
           department_id: payload.departmentId || null,
           group_id: payload.groupId || null,
@@ -178,6 +219,13 @@ Deno.serve(async (req: Request) => {
       const accountId = body.accountId as string;
       let payload = body.payload ?? {};
 
+      // Resolve the chosen master role (when the form sent one).
+      let resolvedRole: { enumValue: string; recordId: string | null } | null =
+        null;
+      if (payload.roleId !== undefined) {
+        resolvedRole = await resolveRole(payload.roleId);
+      }
+
       if (!op.isAdmin) {
         const { data: target } = await admin
           .from("profiles")
@@ -195,7 +243,7 @@ Deno.serve(async (req: Request) => {
           payload.departmentId !== undefined
             ? payload.departmentId
             : target.department_id;
-        payload = enforceHeadScope(payload, destDept);
+        payload = enforceHeadScope(payload, destDept, resolvedRole?.enumValue);
       }
 
       if (payload.emailAddress) {
@@ -212,7 +260,11 @@ Deno.serve(async (req: Request) => {
       };
       set("display_name", payload.displayName);
       set("email", payload.emailAddress);
-      set("role", payload.roleId);
+      // Persist the derived permission level AND the chosen master role id.
+      if (resolvedRole) {
+        patch.role = resolvedRole.enumValue;
+        patch.role_id = resolvedRole.recordId;
+      }
       set("active", payload.active);
       set("company_id", payload.companyId === undefined ? undefined : payload.companyId || null);
       set("department_id", payload.departmentId === undefined ? undefined : payload.departmentId || null);

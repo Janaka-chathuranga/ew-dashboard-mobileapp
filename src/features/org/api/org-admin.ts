@@ -52,6 +52,18 @@ export interface UserRoleChoice {
   label: string;
 }
 
+/**
+ * A role option for the Create/Edit User picker, keyed by the master role id so
+ * custom-named user roles are selectable. `id` is stored on profiles.role_id;
+ * `roleValue` is the permission level (user_role enum) or null (defaults to
+ * 'member' server-side).
+ */
+export interface UserRoleOption {
+  id: string; // project_roles.id — stored on profiles.role_id
+  name: string;
+  roleValue: string | null;
+}
+
 /** Invalidate every org-related cache (picker lists + full management lists). */
 function invalidateOrg(qc: ReturnType<typeof useQueryClient>) {
   for (const k of [
@@ -66,6 +78,7 @@ function invalidateOrg(qc: ReturnType<typeof useQueryClient>) {
     "roles",
     "roles-full",
     "user-role-choices",
+    "user-role-options",
   ]) {
     qc.invalidateQueries({ queryKey: [k] });
   }
@@ -288,19 +301,90 @@ export async function fetchUserRoleChoices(): Promise<UserRoleChoice[]> {
     .map((r: any) => ({ value: r.role_value as string, label: r.name as string }))
     .sort((a, b) => (USER_ROLE_ORDER[a.value] ?? 99) - (USER_ROLE_ORDER[b.value] ?? 99));
 }
-export async function createRole(input: { name: string; description?: string | null }) {
-  const { error } = await supabase
+/**
+ * ALL roles assignable to a USER (scope user|both), keyed by the master role id
+ * so custom-named user roles are selectable too. The Create/Edit-User form
+ * stores the id on profiles.role_id and derives the permission level from
+ * roleValue (defaults to 'member' server-side when null). Ported from the web
+ * lib/admin-api.ts fetchUserRoleOptions().
+ */
+export async function fetchUserRoleOptions(): Promise<UserRoleOption[]> {
+  const { data, error } = await supabase
     .from("project_roles")
-    .insert({ name: input.name, description: input.description || null });
+    .select("id, name, role_value, scope")
+    .in("scope", ["user", "both"])
+    .order("name", { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data ?? []).map((r: any) => ({
+    id: r.id as string,
+    name: r.name as string,
+    roleValue: (r.role_value as string) ?? null,
+  }));
+}
+
+// A user's permission level is stored in the fixed `user_role` enum, so a
+// user-scope role only becomes assignable when its name resolves to one of these
+// values. Resolved leniently from the typed name (covers the seeded system-role
+// names + aliases). Project-scope roles are free text and don't need this.
+// Ported verbatim from the web lib/admin-api.ts systemRoleValueFor().
+export function systemRoleValueFor(name: string): string | null {
+  const n = name.trim().toLowerCase().replace(/\s+/g, " ");
+  const map: Record<string, string> = {
+    member: "member",
+    "team lead": "team-lead",
+    "team-lead": "team-lead",
+    teamlead: "team-lead",
+    "department lead": "department-lead",
+    "department-lead": "department-lead",
+    "dept lead": "department-lead",
+    "department head": "department-lead",
+    "dept head": "department-lead",
+    head: "head",
+    admin: "admin",
+    administrator: "admin",
+  };
+  return map[n] ?? null;
+}
+
+export async function createRole(input: {
+  name: string;
+  description?: string | null;
+  scope: string; // 'user' | 'project'
+}) {
+  const scope = input.scope;
+  const { error } = await supabase.from("project_roles").insert({
+    name: input.name,
+    description: input.description || null,
+    scope,
+    // User roles resolve to the matching system enum; project roles have none.
+    role_value: scope === "user" ? systemRoleValueFor(input.name) : null,
+  });
   if (error) throw new Error(error.message);
 }
 export async function updateRole(
   id: string,
-  patch: { name: string; description?: string | null }
+  patch: {
+    name?: string;
+    description?: string | null;
+    scope?: string;
+    roleValue?: string | null;
+  }
 ) {
+  const update: Record<string, unknown> = {};
+  if (patch.name !== undefined) update.name = patch.name;
+  if (patch.description !== undefined)
+    update.description = patch.description || null;
+  if (patch.scope !== undefined) {
+    update.scope = patch.scope;
+    // Keep role_value consistent with scope: clear it for project-only roles.
+    if (patch.scope !== "user") update.role_value = null;
+  }
+  if (patch.roleValue !== undefined && patch.scope !== "project") {
+    update.role_value = patch.roleValue;
+  }
   const { error } = await supabase
     .from("project_roles")
-    .update({ name: patch.name, description: patch.description || null })
+    .update(update)
     .eq("id", id);
   if (error) throw new Error(error.message);
 }
@@ -450,6 +534,16 @@ export function useUserRoleChoices() {
     staleTime: 5 * 60 * 1000,
   });
 }
+/** All user-assignable roles keyed by master id (Create/Edit-User picker). */
+export function useUserRoleOptions() {
+  const { isAuthenticated } = useSession();
+  return useQuery({
+    queryKey: ["user-role-options"],
+    queryFn: fetchUserRoleOptions,
+    enabled: isAuthenticated,
+    staleTime: 5 * 60 * 1000,
+  });
+}
 
 export function useUserHeadDepartments(userId?: string) {
   const { isAuthenticated } = useSession();
@@ -528,7 +622,18 @@ export const useDeleteDesignation = () => useOrgMutation(deleteDesignation);
 
 export const useCreateRole = () => useOrgMutation(createRole);
 export const useUpdateRole = () =>
-  useOrgMutation(({ id, patch }: { id: string; patch: { name: string; description?: string | null } }) =>
-    updateRole(id, patch)
+  useOrgMutation(
+    ({
+      id,
+      patch,
+    }: {
+      id: string;
+      patch: {
+        name?: string;
+        description?: string | null;
+        scope?: string;
+        roleValue?: string | null;
+      };
+    }) => updateRole(id, patch)
   );
 export const useDeleteRole = () => useOrgMutation(deleteRole);

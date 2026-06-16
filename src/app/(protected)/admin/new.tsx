@@ -12,7 +12,7 @@ import {
   useDepartments,
   useDesignations,
   useGroups,
-  useUserRoleChoices,
+  useUserRoleOptions,
 } from "@/features/org";
 import { Ionicons } from "@expo/vector-icons";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -33,13 +33,15 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-// Fallback used only until the user_roles master loads.
-const FALLBACK_ROLE_ITEMS = [
-  { label: "Member", value: "member" },
-  { label: "Team Lead", value: "team-lead" },
-  { label: "Department Head", value: "department-lead" },
-  { label: "Head", value: "head" },
-  { label: "Admin", value: "admin" },
+// Fallback used only until the roles master loads. Keyed by the user_role enum
+// (value === roleValue) — the Edge Function's resolveRole accepts a bare enum
+// for back-compat, so the form still works if the master is unreachable.
+const FALLBACK_ROLE_OPTIONS = [
+  { label: "Member", value: "member", roleValue: "member" },
+  { label: "Team Lead", value: "team-lead", roleValue: "team-lead" },
+  { label: "Department Head", value: "department-lead", roleValue: "department-lead" },
+  { label: "Head", value: "head", roleValue: "head" },
+  { label: "Admin", value: "admin", roleValue: "admin" },
 ];
 
 const FLAGS = [
@@ -96,7 +98,7 @@ export default function NewUserScreen() {
       displayName: "",
       emailAddress: "",
       password: "",
-      roleId: "member",
+      roleId: "", // set to the Member master-role id once the master loads
       companyId: "",
       departmentId: "",
       groupId: "",
@@ -113,13 +115,32 @@ export default function NewUserScreen() {
   const { data: groups = [] } = useGroups(departmentId || undefined);
   const { data: designations = [] } = useDesignations();
   const { data: allDepartments = [] } = useDepartments();
-  const { data: userRoles = [] } = useUserRoleChoices();
+  const { data: userRoleOpts = [] } = useUserRoleOptions();
 
-  // Role choices come from the Roles master (fallback until it loads).
-  const allRoleItems = userRoles.length ? userRoles : FALLBACK_ROLE_ITEMS;
-  const roleItems = isAdmin
-    ? allRoleItems
-    : allRoleItems.filter((r) => r.value !== "admin" && r.value !== "head");
+  // Role options come from the roles master (scope user|both), keyed by the
+  // master role id so custom user roles are selectable. `roleValue` is the
+  // permission level used for gating. Fallback enum list until the master loads.
+  const baseRoleOptions = userRoleOpts.length
+    ? userRoleOpts.map((r) => ({ value: r.id, label: r.name, roleValue: r.roleValue }))
+    : FALLBACK_ROLE_OPTIONS;
+  // Never let a non-admin assign admin/head.
+  const roleOptions = isAdmin
+    ? baseRoleOptions
+    : baseRoleOptions.filter((r) => r.roleValue !== "admin" && r.roleValue !== "head");
+  const roleItems = roleOptions.map((r) => ({ label: r.label, value: r.value }));
+  // The Member role id, used as the default selection for new users.
+  const defaultRoleId =
+    baseRoleOptions.find((r) => r.roleValue === "member")?.value ??
+    baseRoleOptions[0]?.value ??
+    "";
+  // Permission level of the selected role (drives the head-only departments UI).
+  const selectedRoleValue =
+    baseRoleOptions.find((r) => r.value === roleId)?.roleValue ?? null;
+
+  // Default to the Member role once the master loads (roleId starts empty).
+  useEffect(() => {
+    if (!roleId && defaultRoleId) setValue("roleId", defaultRoleId);
+  }, [roleId, defaultRoleId, setValue]);
 
   // Reset dependent pickers when the parent changes.
   useEffect(() => {
@@ -152,7 +173,7 @@ export default function NewUserScreen() {
       {
         onSuccess: async (data: any) => {
           // Multi-department-head assignment is an admin-only, RLS-gated write.
-          if (isAdmin && values.roleId === "head" && data?.accountId) {
+          if (isAdmin && selectedRoleValue === "head" && data?.accountId) {
             try {
               await setUserHeadDepartments(data.accountId, headDeptIds);
             } catch (e) {
@@ -267,7 +288,7 @@ export default function NewUserScreen() {
             required={false}
           />
 
-          {isAdmin && roleId === "head" && (
+          {isAdmin && selectedRoleValue === "head" && (
             <View className="mb-4">
               <Text className="text-gray-700 mb-2 font-medium">
                 Head of Departments
